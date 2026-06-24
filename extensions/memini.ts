@@ -31,9 +31,6 @@ type FileConfig = Partial<{
 	base_url: string;
 	api_key: string;
 	namespace: string;
-	namespace_prefix: string;
-	recall_namespace: string;
-	recall_scope: "exact" | "subtree";
 	shared_namespaces: string[] | string;
 	recall: boolean;
 	capture: boolean;
@@ -50,8 +47,6 @@ export interface ResolvedConfig {
 	base_url: string;
 	api_key: string;
 	namespace: string;
-	recall_namespace: string;
-	recall_scope: "exact" | "subtree";
 	shared_namespaces: string[];
 	recall: boolean;
 	capture: boolean;
@@ -95,14 +90,6 @@ function sanitizeNamespace(value: unknown): string {
 		.join("/");
 }
 
-function joinNamespace(...parts: string[]): string {
-	return parts.map(sanitizeNamespace).filter(Boolean).join("/");
-}
-
-function recallScope(value: unknown): "exact" | "subtree" {
-	return String(value ?? "").trim().toLowerCase() === "subtree" ? "subtree" : "exact";
-}
-
 function namespaceList(value: unknown, exclude: string[] = []): string[] {
 	const raw = Array.isArray(value) ? value : String(value ?? "").split(/[|,\s]+/);
 	const excluded = new Set(exclude.map(sanitizeNamespace).filter(Boolean));
@@ -121,20 +108,13 @@ export function deriveNamespace(worktreeOrCwd: string | undefined): string {
 }
 
 export function resolveConfig(env: NodeJS.ProcessEnv, options: FileConfig = {}, worktreeOrCwd?: string): ResolvedConfig {
-	const explicitNamespace = options.namespace || env.MEMINI_NAMESPACE;
-	const namespacePrefix = sanitizeNamespace(options.namespace_prefix || env.MEMINI_NAMESPACE_PREFIX);
-	const derivedNamespace = deriveNamespace(worktreeOrCwd) || DEFAULT_NAMESPACE;
-	const namespace = sanitizeNamespace(explicitNamespace || joinNamespace(namespacePrefix, derivedNamespace)) || DEFAULT_NAMESPACE;
-	const resolvedRecallNamespace = sanitizeNamespace(options.recall_namespace || env.MEMINI_RECALL_NAMESPACE || namespace) || namespace;
-	const resolvedRecallScope = recallScope(options.recall_scope || env.MEMINI_RECALL_SCOPE);
-	const sharedNamespaces = namespaceList(options.shared_namespaces ?? env.MEMINI_SHARED_NAMESPACES, [namespace, resolvedRecallNamespace]);
+	const namespace = sanitizeNamespace(options.namespace || env.MEMINI_NAMESPACE || deriveNamespace(worktreeOrCwd) || DEFAULT_NAMESPACE) || DEFAULT_NAMESPACE;
+	const sharedNamespaces = namespaceList(options.shared_namespaces ?? env.MEMINI_SHARED_NAMESPACES, [namespace]);
 	return {
 		enabled: options.enabled !== undefined ? options.enabled !== false : envBool(env.MEMINI_ENABLED, true),
 		base_url: options.base_url || env.MEMINI_BASE_URL || env.MEMINI_URL || DEFAULT_BASE_URL,
 		api_key: options.api_key || env.MEMINI_API_KEY || env.MEMINI_TOKEN || "",
 		namespace,
-		recall_namespace: resolvedRecallNamespace,
-		recall_scope: resolvedRecallScope,
 		shared_namespaces: sharedNamespaces,
 		recall: options.recall !== undefined ? options.recall !== false : envBool(env.MEMINI_RECALL, true),
 		capture: options.capture !== undefined ? options.capture !== false : envBool(env.MEMINI_CAPTURE, true),
@@ -427,6 +407,13 @@ function validTier(value: unknown, fallback: Tier): Tier {
 	return (VALID_TIERS as readonly string[]).includes(String(value)) ? (String(value) as Tier) : fallback;
 }
 
+function namespacePathParam(namespace: string): string {
+	// Some HTTP gateways decode %2F before forwarding, which turns a namespace like
+	// "main/projects/foo" into extra path segments. Double-encoding preserves the
+	// slash through the gateway so memini receives it as one path parameter.
+	return encodeURIComponent(encodeURIComponent(namespace));
+}
+
 function queryString(params: Record<string, unknown>): string {
 	const q = new URLSearchParams();
 	for (const [key, value] of Object.entries(params)) {
@@ -630,7 +617,7 @@ function registerMemoryTools(pi: ExtensionAPI, getState: () => ExtensionState) {
 			const state = getState();
 			const namespace = params.namespace || state.config.namespace;
 			const res = await state.client.get(
-				`/v1/namespaces/${encodeURIComponent(namespace)}/briefing${queryString({ per_section: params.per_section })}`,
+				`/v1/namespaces/${namespacePathParam(namespace)}/briefing${queryString({ per_section: params.per_section })}`,
 				namespace,
 				signal,
 				false,
@@ -686,8 +673,7 @@ export default function meminiExtension(pi: ExtensionAPI) {
 		const sid = sessionIdentity(ctx);
 		if (sid) body.exclude_metadata = { session_id: sid };
 		if (state.config.recall_min_score > 0) body.min_score = state.config.recall_min_score;
-		if (state.config.recall_scope !== "exact") body.scope = state.config.recall_scope;
-		const namespaces = namespaceList([state.config.recall_namespace, ...state.config.shared_namespaces]);
+		const namespaces = namespaceList([state.config.namespace, ...state.config.shared_namespaces]);
 		const responses = await Promise.all(
 			namespaces.map((namespace) => state.client.post("/v1/search", body, namespace, ctx.signal, state.config.fallback_on_error)),
 		);
@@ -736,7 +722,7 @@ export default function meminiExtension(pi: ExtensionAPI) {
 				.then((r) => `${r.status} ${r.statusText}`)
 				.catch((error) => String(error));
 			ctx.ui.notify(
-				`memini ${state.config.enabled ? "enabled" : "disabled"}: ${state.client.baseUrl}, namespace=${state.config.namespace}, recall=${state.config.recall_namespace}/${state.config.recall_scope}, health=${health}`,
+				`memini ${state.config.enabled ? "enabled" : "disabled"}: ${state.client.baseUrl}, namespace=${state.config.namespace}, shared=${state.config.shared_namespaces.join(",") || "none"}, health=${health}`,
 				"info",
 			);
 		},
@@ -747,7 +733,7 @@ export default function meminiExtension(pi: ExtensionAPI) {
 		handler: async (_args, ctx) => {
 			await refreshState(ctx);
 			const res = await state.client.get(
-				`/v1/namespaces/${encodeURIComponent(state.config.namespace)}/briefing`,
+				`/v1/namespaces/${namespacePathParam(state.config.namespace)}/briefing`,
 				state.config.namespace,
 				undefined,
 				false,
@@ -762,15 +748,12 @@ export default function meminiExtension(pi: ExtensionAPI) {
 			await refreshState(ctx);
 			const query = args.trim() || (await ctx.ui.input("memini recall", "query"));
 			if (!query) return;
-			const res = (await state.client.post(
-				"/v1/search",
-				{ query, limit: state.config.recall_limit },
-				state.config.namespace,
-				undefined,
-				false,
-			)) as any;
-			const lines = formatSearchResults(res?.results, state.config.recall_limit);
-			pi.sendMessage({ customType: "memini", content: lines.join("\n") || "No matching memories found.", display: true, details: res });
+			const body: JsonObject = { query, limit: state.config.recall_limit };
+			const namespaces = namespaceList([state.config.namespace, ...state.config.shared_namespaces]);
+			const responses = await Promise.all(namespaces.map((namespace) => state.client.post("/v1/search", body, namespace, undefined, false)));
+			const results = mergeSearchResults(responses, state.config.recall_limit);
+			const lines = formatSearchResults(results, state.config.recall_limit);
+			pi.sendMessage({ customType: "memini", content: lines.join("\n") || "No matching memories found.", display: true, details: { results } });
 		},
 	});
 
