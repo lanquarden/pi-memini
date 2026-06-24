@@ -1,0 +1,35 @@
+{
+  "name": "pi-memini",
+  "version": "0.1.0",
+  "description": "Pi extension for seamless memini long-term memory over REST (no MCP required).",
+  "type": "module",
+  "private": true,
+  "keywords": [
+    "pi-package",
+    "pi",
+    "memini",
+    "memory",
+    "ai-agent"
+  ],
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./extensions/memini.ts"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*",
+    "typescript": "^5.9.0"
+  }
+}
