@@ -1,6 +1,6 @@
 {
   "name": "@lanquarden/pi-memini",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Pi extension for seamless memini long-term memory over REST (no MCP required).",
   "type": "module",
   "keywords": [
