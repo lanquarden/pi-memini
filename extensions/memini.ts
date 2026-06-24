@@ -427,6 +427,13 @@ function validTier(value: unknown, fallback: Tier): Tier {
 	return (VALID_TIERS as readonly string[]).includes(String(value)) ? (String(value) as Tier) : fallback;
 }
 
+function namespacePathParam(namespace: string): string {
+	// Some HTTP gateways decode %2F before forwarding, which turns a namespace like
+	// "main/projects/foo" into extra path segments. Double-encoding preserves the
+	// slash through the gateway so memini receives it as one path parameter.
+	return encodeURIComponent(encodeURIComponent(namespace));
+}
+
 function queryString(params: Record<string, unknown>): string {
 	const q = new URLSearchParams();
 	for (const [key, value] of Object.entries(params)) {
@@ -630,7 +637,7 @@ function registerMemoryTools(pi: ExtensionAPI, getState: () => ExtensionState) {
 			const state = getState();
 			const namespace = params.namespace || state.config.namespace;
 			const res = await state.client.get(
-				`/v1/namespaces/${encodeURIComponent(namespace)}/briefing${queryString({ per_section: params.per_section })}`,
+				`/v1/namespaces/${namespacePathParam(namespace)}/briefing${queryString({ per_section: params.per_section })}`,
 				namespace,
 				signal,
 				false,
@@ -747,7 +754,7 @@ export default function meminiExtension(pi: ExtensionAPI) {
 		handler: async (_args, ctx) => {
 			await refreshState(ctx);
 			const res = await state.client.get(
-				`/v1/namespaces/${encodeURIComponent(state.config.namespace)}/briefing`,
+				`/v1/namespaces/${namespacePathParam(state.config.namespace)}/briefing`,
 				state.config.namespace,
 				undefined,
 				false,
@@ -762,15 +769,13 @@ export default function meminiExtension(pi: ExtensionAPI) {
 			await refreshState(ctx);
 			const query = args.trim() || (await ctx.ui.input("memini recall", "query"));
 			if (!query) return;
-			const res = (await state.client.post(
-				"/v1/search",
-				{ query, limit: state.config.recall_limit },
-				state.config.namespace,
-				undefined,
-				false,
-			)) as any;
-			const lines = formatSearchResults(res?.results, state.config.recall_limit);
-			pi.sendMessage({ customType: "memini", content: lines.join("\n") || "No matching memories found.", display: true, details: res });
+			const body: JsonObject = { query, limit: state.config.recall_limit };
+			if (state.config.recall_scope !== "exact") body.scope = state.config.recall_scope;
+			const namespaces = namespaceList([state.config.recall_namespace, ...state.config.shared_namespaces]);
+			const responses = await Promise.all(namespaces.map((namespace) => state.client.post("/v1/search", body, namespace, undefined, false)));
+			const results = mergeSearchResults(responses, state.config.recall_limit);
+			const lines = formatSearchResults(results, state.config.recall_limit);
+			pi.sendMessage({ customType: "memini", content: lines.join("\n") || "No matching memories found.", display: true, details: { results } });
 		},
 	});
 
