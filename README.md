@@ -1,5 +1,7 @@
 # pi-memini
 
+[![CI](https://github.com/lanquarden/pi-memini/actions/workflows/test.yml/badge.svg)](https://github.com/lanquarden/pi-memini/actions/workflows/test.yml)
+
 A native [pi](https://pi.dev) extension for [memini](https://github.com/eleboucher/memini): automatic cross-session memory over memini's REST API, without wiring MCP.
 
 It mirrors the opencode integration pattern:
@@ -10,12 +12,10 @@ It mirrors the opencode integration pattern:
 
 ## Install
 
-From this repo:
-
 ```sh
-pi install /home/lanquarden/repos/pi-memini
+pi install @lanquarden/pi-memini
 # or try once:
-pi -e /home/lanquarden/repos/pi-memini
+pi -e @lanquarden/pi-memini
 ```
 
 Configure the memini endpoint and token in the shell that launches pi:

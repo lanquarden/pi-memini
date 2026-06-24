@@ -1,0 +1,92 @@
+name: Release to npm
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_bump:
+        description: Version bump
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      dry_run:
+        description: Dry run (skip publish)
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      # OIDC trusted publishing: id-token: write permission lets the runner
+      # generate an OIDC token. npm CLI detects the OIDC environment and
+      # exchanges it for a short-lived publish token automatically.
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Release @lanquarden/pi-memini
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PKG_NAME="@lanquarden/pi-memini"
+
+          # Bump version
+          npm version ${{ inputs.version_bump }} --no-git-tag-version
+          NEW_VERSION=$(node -p "require('./package.json').version")
+
+          # Skip if this version already published to npm (idempotent re-run)
+          if npm view "${PKG_NAME}@${NEW_VERSION}" version >/dev/null 2>&1; then
+            echo "${PKG_NAME}@${NEW_VERSION} already published, skipping"
+            exit 0
+          fi
+
+          # Commit and tag
+          git add package.json package-lock.json
+          git commit -m "v${NEW_VERSION}" || echo "Nothing to commit"
+          git tag -f -a "v${NEW_VERSION}" -m "v${NEW_VERSION}"
+          git push origin HEAD
+          git push origin "v${NEW_VERSION}"
+
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            npm publish --dry-run --access public
+            echo "Would create GitHub release: gh release create 'v${NEW_VERSION}' --title 'v${NEW_VERSION}' --generate-notes"
+          else
+            npm publish --access public
+            gh release create "v${NEW_VERSION}" --title "v${NEW_VERSION}" --generate-notes || echo "Release may already exist"
+          fi
