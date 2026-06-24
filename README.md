@@ -13,9 +13,9 @@ It mirrors the opencode integration pattern:
 ## Install
 
 ```sh
-pi install @lanquarden/pi-memini
+pi install npm:@lanquarden/pi-memini
 # or try once:
-pi -e @lanquarden/pi-memini
+pi -e npm:@lanquarden/pi-memini
 ```
 
 Configure the memini endpoint and token in the shell that launches pi:
