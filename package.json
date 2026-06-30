@@ -14,6 +14,10 @@
   "publishConfig": {
     "access": "public"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lanquarden/pi-memini"
+  },
   "pi": {
     "extensions": [
       "./extensions/memini.ts"
@@ -21,7 +25,9 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck"
+    "build": "tsc -p tsconfig.build.json",
+    "check": "npm run typecheck",
+    "test": "npm run build && node --test"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
