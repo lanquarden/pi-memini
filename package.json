@@ -25,9 +25,8 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "tsc -p tsconfig.build.json",
     "check": "npm run typecheck",
-    "test": "npm run build && node --test"
+    "test": "node --import tsx --test"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
@@ -38,6 +37,7 @@
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*",
+    "tsx": "^4.15.0",
     "typescript": "^5.9.0"
   }
 }

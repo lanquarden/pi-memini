@@ -62,6 +62,7 @@ interface ExtensionState {
 	config: ResolvedConfig;
 	client: MeminiClient;
 	recallBlock?: string;
+	lastCapturedAssistantIdx?: number;
 	capturedTurnHashes: Set<string>;
 }
 
@@ -272,15 +273,74 @@ function textFromMessage(message: any): string {
 	return asText(message.content);
 }
 
-function lastTextByRole(messages: any[], role: string): string {
-	for (const entry of [...messages].reverse()) {
-		const message = entry?.message ?? entry;
+/**
+ * Return the last message text for a given role, scanning backwards from the end
+ * down to (and including) sinceIndex. This is a "last-of-role" lookup — use it
+ * for getting the final assistant reply or the last user message for dedup.
+ * For collecting all user messages in a range, use computeTranscriptSlice.
+ */
+export function getTextByRole(messages: any[], role: string, sinceIndex = 0): string {
+	for (let i = messages.length - 1; i >= sinceIndex; i--) {
+		const message = messages[i]?.message ?? messages[i];
 		if (message?.role === role) {
 			const text = textFromMessage(message);
 			if (text) return text;
 		}
 	}
 	return "";
+}
+
+/**
+ * Alias for clarity — explicitly communicates this is the last-of-role lookup
+ * (reverse scan starting at the end, bounded by sinceIndex).
+ */
+export const lastTextByRole = getTextByRole;
+
+export function stripRecallBlock(text: string, recallBlock?: string): string {
+	const rb = (recallBlock || "").trim();
+	if (!rb && !text.startsWith("Relevant long-term memory from memini")) return text;
+	if (rb) {
+		const candidates = [
+			`${rb}\n\n---\n\n`,
+			`${rb}\n---\n\n`,
+			`${rb}\n\n`,
+			`${rb}\n`,
+			rb,
+		];
+		for (const prefix of candidates) {
+			if (text.startsWith(prefix)) return text.slice(prefix.length).trimStart();
+		}
+	}
+	if (text.startsWith("Relevant long-term memory from memini")) {
+		const delimIdx = text.indexOf("\n---\n");
+		if (delimIdx >= 0) return text.slice(delimIdx + "\n---\n".length).trimStart();
+		return text.replace(/^Relevant long-term memory from memini[\s\S]*?(\n\n|$)/, "").trimStart();
+	}
+	return text;
+}
+
+export function computeTranscriptSlice(messages: any[], recallBlock: string | undefined, sinceAssistantIdx: number): { users: string[]; assistant: string; lastAssistantIdx: number } {
+	let lastAssistantIdx = -1;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const msg = messages[i]?.message ?? messages[i];
+		if (msg?.role === "assistant") {
+			const t = textFromMessage(msg);
+			if (t) { lastAssistantIdx = i; break; }
+		}
+	}
+	if (lastAssistantIdx < 0) return { users: [], assistant: "", lastAssistantIdx };
+	const start = Math.max(0, sinceAssistantIdx);
+	const end = Math.max(-1, lastAssistantIdx - 1);
+	const users: string[] = [];
+	for (let i = start; i <= end; i++) {
+		const msg = messages[i]?.message ?? messages[i];
+		if (msg?.role === "user") {
+			const t = textFromMessage(msg);
+			if (t) users.push(stripRecallBlock(t, recallBlock));
+		}
+	}
+	const assistant = lastTextByRole(messages, "assistant", sinceAssistantIdx);
+	return { users, assistant, lastAssistantIdx };
 }
 
 function truncate(value: string, max: number): string {
@@ -404,7 +464,7 @@ function sessionIdentity(ctx: ExtensionContext): string {
 	return sanitizeNamespace(ctx.sessionManager.getSessionId?.() || ctx.sessionManager.getSessionFile?.() || ctx.cwd);
 }
 
-function turnHash(userText: string, assistantText: string): string {
+export function turnHash(userText: string, assistantText: string): string {
 	return createHash("sha256").update(userText).update("\0").update(assistantText).digest("hex");
 }
 
@@ -658,7 +718,7 @@ export default function meminiExtension(pi: ExtensionAPI) {
 
 	const refreshState = async (ctx: ExtensionContext) => {
 		const config = await resolveRuntimeConfig(pi, ctx);
-		state = { config, client: new MeminiClient(config), capturedTurnHashes: state.capturedTurnHashes };
+		state = { config, client: new MeminiClient(config), capturedTurnHashes: state.capturedTurnHashes, lastCapturedAssistantIdx: state.lastCapturedAssistantIdx };
 		if (!config.enabled || !config.expose_tools) {
 			pi.setActiveTools(pi.getActiveTools().filter((name) => !MEMORY_TOOL_NAMES.has(name)));
 		}
@@ -694,20 +754,55 @@ export default function meminiExtension(pi: ExtensionAPI) {
 		try {
 			if (!state.config.enabled || !state.config.capture) return;
 			const messages = (event.messages || []) as any[];
-			const userText = lastTextByRole(messages, "user");
+
+			// Helper: remove injected recall block from the start of a user message
+			const stripRecall = (text: string): string => stripRecallBlock(text, state.recallBlock);
+
+			// Determine the final assistant reply
 			const assistantText = lastTextByRole(messages, "assistant");
-			if (!userText || !assistantText) return;
-			const hash = turnHash(userText, assistantText);
+			if (!assistantText) return;
+			// Dedup hash uses the last user message since the prior saved assistant, plus the final assistant text
+			const sinceIdx = (state.lastCapturedAssistantIdx ?? -1) + 1;
+			const userTextForHashRaw = lastTextByRole(messages, "user", sinceIdx) || lastTextByRole(messages, "user");
+			if (!userTextForHashRaw) return;
+			const cleanUserTextForHash = stripRecall(userTextForHashRaw);
+			const hash = turnHash(cleanUserTextForHash, assistantText);
 			if (state.capturedTurnHashes.has(hash)) return;
+
 			const sid = sessionIdentity(ctx);
-			const body = {
-				content: `${truncate(userText, 1_000)}\n\n${truncate(assistantText, 3_000)}`,
+
+			// Always-on transcript capture — all user messages since last saved assistant + final assistant reply
+			let lastAssistantIdx = -1;
+			for (let i = messages.length - 1; i >= 0; i--) {
+				const msg = messages[i]?.message ?? messages[i];
+				if (msg?.role === "assistant" && textFromMessage(msg)) { lastAssistantIdx = i; break; }
+			}
+			const start = Math.max(0, sinceIdx);
+			const end = Math.max(-1, lastAssistantIdx - 1);
+			const userMessages: string[] = [];
+			for (let i = start; i <= end; i++) {
+				const msg = messages[i]?.message ?? messages[i];
+				if (msg?.role === "user") {
+					const t = textFromMessage(msg);
+					if (t) userMessages.push(stripRecall(t));
+				}
+			}
+			const parts: string[] = [];
+			parts.push("User messages:");
+			userMessages.forEach((msg, idx) => { parts.push(`- U${idx + 1}: ${truncate(msg, 2000)}`); });
+			parts.push("", "Final reply:", truncate(assistantText, 4000));
+			const transcriptBody = {
+				content: parts.join("\n"),
 				tier: "episodic",
-				tags: ["pi"],
-				metadata: { source: "pi", session_id: sid, format: "turn" },
+				tags: ["pi", "transcript"],
+				metadata: { source: "pi", session_id: sid, format: "transcript_users_final" },
 			};
-			const stored = await state.client.post("/v1/memories", body, state.config.namespace, undefined, state.config.fallback_on_error);
-			if (stored !== null) state.capturedTurnHashes.add(hash);
+			const storedAny = await state.client.post("/v1/memories", transcriptBody, state.config.namespace, undefined, state.config.fallback_on_error);
+
+			if (storedAny !== null) {
+				state.capturedTurnHashes.add(hash);
+				state.lastCapturedAssistantIdx = lastAssistantIdx;
+			}
 		} finally {
 			state.recallBlock = undefined;
 		}
