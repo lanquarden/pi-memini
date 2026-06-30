@@ -154,10 +154,15 @@ async function resolveGitRoot(pi: ExtensionAPI, cwd: string): Promise<string> {
 
 async function resolveRuntimeConfig(pi: ExtensionAPI, ctx: ExtensionContext): Promise<ResolvedConfig> {
 	const globalConfigPath = join(homedir(), ".pi", "agent", "memini.json");
-	const projectConfigPath = join(ctx.cwd, CONFIG_DIR_NAME, "memini.json");
 	const globalConfig = await readJsonIfExists(globalConfigPath);
-	const projectConfig = ctx.isProjectTrusted() ? await readJsonIfExists(projectConfigPath) : {};
-	const worktree = await resolveGitRoot(pi, ctx.cwd);
+
+	let projectConfig: FileConfig = {};
+	if (ctx.cwd && ctx.isProjectTrusted()) {
+		const projectConfigPath = join(ctx.cwd, CONFIG_DIR_NAME, "memini.json");
+		projectConfig = await readJsonIfExists(projectConfigPath);
+	}
+
+	const worktree = ctx.cwd ? await resolveGitRoot(pi, ctx.cwd) : process.cwd();
 	return resolveConfig(process.env, { ...globalConfig, ...projectConfig }, worktree);
 }
 
