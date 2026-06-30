@@ -7,7 +7,7 @@ A native [pi](https://pi.dev) extension for [memini](https://github.com/elebouch
 It mirrors the opencode integration pattern:
 
 - recalls relevant memories before each user turn and injects them as transient context;
-- captures completed user/assistant turns as episodic memories after each turn; stores all user messages since the last saved assistant reply (initial prompt + steering for this run) plus the final assistant reply
+- captures completed user/assistant turns as episodic memories after each turn;
 - registers direct `memory_*` pi tools for explicit remember/recall/list/get/forget/answer/briefing operations.
 
 ## Install
@@ -51,7 +51,6 @@ Environment variables:
 | `MEMINI_FALLBACK` | on | automatic hooks degrade silently on memini errors |
 | `MEMINI_REQUIRE_HTTPS` | unset | set `1` to refuse sending bearer tokens over non-loopback HTTP |
 
-
 Optional config files can override non-secret options:
 
 - `~/.pi/agent/memini.json`
@@ -69,11 +68,6 @@ Example:
   "recall_max_tokens": 1200
 }
 ```
-
-Notes:
-- Last-of-role lookups use a reverse scan with sinceIndex via lastTextByRole/getTextByRole.
-- Transcript capture dedupes by hash of cleaned final user text + final assistant text.
-- Prefer a single consolidated test file over multiple fragmented test files.
 
 Tokens via `api_key` in config files work, but prefer environment variables for secrets.
 
